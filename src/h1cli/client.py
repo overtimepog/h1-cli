@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import urllib.parse
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -75,6 +76,129 @@ query($handle: String!) {
 }
 """
 
+# GraphQL search query — uses structured filters where supported,
+# falls back to client-side filtering for bounty/report counts.
+SEARCH_GQL_QUERY = """
+query($first: Int!, $where: FiltersTeamFilterInput!) {
+  teams(first: $first, where: $where) {
+    edges {
+      node {
+        handle
+        name
+        url
+        offers_bounties
+        minimum_bounty
+        average_bounty_upper_amount
+        average_bounty_lower_amount
+        currency
+        resolved_report_count
+        created_at
+        updated_at
+        about
+        industry
+        submission_state
+        triage_active
+        bounty_time
+        response_efficiency_percentage
+        bounties_total
+        top_bounty_upper_amount
+        top_bounty_lower_amount
+        profile_picture(size: medium)
+        internet_bug_bounty
+        structured_scopes(first: 50) {
+          edges {
+            node {
+              asset_identifier
+              asset_type
+              eligible_for_bounty
+              eligible_for_submission
+            }
+          }
+        }
+        bounty_table {
+          bounty_table_rows(first: 50) {
+            edges {
+              node {
+                name
+                critical
+                critical_minimum
+                high
+                high_minimum
+                medium
+                medium_minimum
+                low
+                low_minimum
+                description
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+@dataclass
+class SearchFilters:
+    """Structured search filters for GraphQL-based program search.
+
+    Fields that map to GraphQL where clauses:
+        keyword: text search in policy (searchable_content.policy._ilike)
+        asset: filter by asset_identifier in scope (structured_scopes.asset_identifier._ilike)
+        paid: offers_bounties (True = paid programs, False = VDP only, None = both)
+        submission_state: 'open' (default) or 'closed'
+
+    Fields filtered client-side (not in GraphQL where):
+        min_bounty: minimum minimum_bounty (USD)
+        min_reports: minimum resolved_report_count
+    """
+
+    keyword: str = ""
+    asset: str = ""
+    paid: bool | None = None
+    submission_state: str = "open"
+    min_bounty: int | None = None
+    min_reports: int | None = None
+
+    def build_graphql_where(self) -> dict:
+        """Build the 'where' clause for the GraphQL teams query."""
+        conditions = []
+
+        # submission_state filter
+        if self.submission_state:
+            conditions.append({"submission_state": {"_eq": self.submission_state}})
+
+        # paid/unpaid filter
+        if self.paid is not None:
+            conditions.append({"offers_bounties": {"_eq": self.paid}})
+
+        # asset filter — match any scope containing the string
+        if self.asset:
+            conditions.append({
+                "structured_scopes": {
+                    "asset_identifier": {"_ilike": f"%{self.asset}%"}
+                }
+            })
+
+        # keyword search in policy text
+        if self.keyword:
+            conditions.append({
+                "searchable_content": {
+                    "policy": {"_ilike": f"%{self.keyword}%"}
+                }
+            })
+
+        if not conditions:
+            # Default: open programs
+            return {"submission_state": {"_eq": "open"}}
+
+        if len(conditions) == 1:
+            return conditions[0]
+
+        return {"_and": conditions}
+
 
 @dataclass
 class BountyTable:
@@ -137,7 +261,7 @@ class Program:
             average_bounty_upper=node.get("average_bounty_upper_amount"),
             average_bounty_lower=node.get("average_bounty_lower_amount"),
             currency=node.get("currency", "usd"),
-            resolved_report_count=node.get("resolved_report_count", 0),
+            resolved_report_count=node.get("resolved_report_count") or 0,
             created_at=node.get("created_at"),
             updated_at=node.get("updated_at"),
             about=node.get("about", ""),
@@ -173,6 +297,34 @@ class Program:
             profile_picture=result.get("profile_picture", ""),
         )
 
+    def matches_filters(self, filters: SearchFilters) -> bool:
+        """Check if this program matches client-side filters.
+
+        Checks all filter fields even though asset/paid/keyword are also
+        handled server-side by GraphQL — this provides defense-in-depth.
+        """
+        # Paid/unpaid
+        if filters.paid is not None:
+            if bool(self.offers_bounties) != filters.paid:
+                return False
+        # Asset — match against any scope's asset_identifier
+        if filters.asset:
+            asset_lower = filters.asset.lower()
+            if not any(
+                asset_lower in s.get("asset_identifier", "").lower()
+                for s in (self.scopes or [])
+            ):
+                return False
+        # Min bounty
+        if filters.min_bounty is not None:
+            if self.minimum_bounty is None or self.minimum_bounty < filters.min_bounty:
+                return False
+        # Min resolved reports
+        if filters.min_reports is not None:
+            if (self.resolved_report_count or 0) < filters.min_reports:
+                return False
+        return True
+
 
 class H1Client:
     """Async HTTP client for HackerOne's public API."""
@@ -192,7 +344,7 @@ class H1Client:
     def __exit__(self, *args):
         self.close()
 
-    # ── GraphQL ──────────────────────────────────────────────────────
+    # ── GraphQL single program ────────────────────────────────────────
 
     def get_program(self, handle: str) -> Program | None:
         """Fetch a single program by handle via GraphQL."""
@@ -209,6 +361,68 @@ class H1Client:
         if not edges:
             return None
         return Program.from_graphql(edges[0]["node"])
+
+    # ── GraphQL search with structured filters ────────────────────────
+
+    def search_programs_graphql(
+        self,
+        keyword: str = "",
+        filters: SearchFilters | None = None,
+        sort: str = "resolved_report_count",
+        limit: int = 25,
+    ) -> list[Program]:
+        """Search programs via GraphQL with structured filters.
+
+        Args:
+            keyword: Text search in program policy content.
+            filters: Structured filters (paid, asset, min_bounty, min_reports, etc.).
+            sort: Sort field — 'resolved_report_count', 'minimum_bounty',
+                  'response_efficiency_percentage', 'bounty_time'.
+            limit: Max results to return.
+
+        Returns:
+            Filtered and sorted list of programs.
+        """
+        if filters is None:
+            filters = SearchFilters()
+
+        # Merge explicit keyword into filters if provided
+        if keyword and not filters.keyword:
+            filters.keyword = keyword
+
+        where = filters.build_graphql_where()
+
+        resp = self._client.post(
+            GRAPHQL_URL,
+            json={
+                "query": SEARCH_GQL_QUERY,
+                "variables": {
+                    "first": min(limit * 3, 200),  # Fetch more to allow client-side filtering
+                    "where": where,
+                },
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        edges = data.get("data", {}).get("teams", {}).get("edges", [])
+        programs = [Program.from_graphql(e["node"]) for e in edges]
+
+        # Client-side filtering for fields not in GraphQL where clause
+        # and defense-in-depth for asset/paid
+        programs = [p for p in programs if p.matches_filters(filters)]
+
+        # Sort (client-side for fields GraphQL doesn't sort)
+        reverse = True
+        key_map = {
+            "resolved_report_count": lambda p: p.resolved_report_count or 0,
+            "minimum_bounty": lambda p: p.minimum_bounty or 0,
+            "response_efficiency_percentage": lambda p: p.response_efficiency or 0,
+            "bounty_time": lambda p: -(p.bounty_time_hours or 99999),  # lower is better
+        }
+        key_fn = key_map.get(sort, key_map["resolved_report_count"])
+        programs.sort(key=key_fn, reverse=reverse)
+
+        return programs[:limit]
 
     # ── REST search ──────────────────────────────────────────────────
 
@@ -233,15 +447,17 @@ class H1Client:
         limit: int = 25,
         filters: dict[str, str] | None = None,
     ) -> tuple[list[Program], int]:
-        """Search programs via the REST search API."""
+        """Search programs via the REST search API.
+
+        Prefer search_programs_graphql() for structured filtering.
+        This method is best for simple keyword searches.
+        """
         search_query = self._build_search_query(query, filters)
-        # HackerOne's REST API uses + for spaces and literal : in query params
         params = {
             "query": search_query,
             "sort": sort,
             "limit": str(limit),
         }
-        # Build URL manually — urlencode would encode : as %3A which breaks the API
         query_string = "&".join(
             f"{k}={urllib.parse.quote(v, safe=':+')}" for k, v in params.items()
         )

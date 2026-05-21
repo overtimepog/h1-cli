@@ -4,7 +4,7 @@ import pytest
 import httpx
 from pytest_httpx import HTTPXMock
 
-from h1cli.client import H1Client, Program, BountyTable
+from h1cli.client import H1Client, Program, BountyTable, SearchFilters
 
 
 # ── fixtures ────────────────────────────────────────────────────────────
@@ -110,6 +110,75 @@ def sample_search_response():
     }
 
 
+@pytest.fixture
+def multi_graphql_response():
+    """Two programs for search result tests."""
+    return {
+        "data": {
+            "teams": {
+                "edges": [
+                    {"node": {
+                        "handle": "security",
+                        "name": "HackerOne",
+                        "url": "https://hackerone.com/security",
+                        "offers_bounties": True,
+                        "minimum_bounty": 200,
+                        "average_bounty_upper_amount": 500,
+                        "average_bounty_lower_amount": 150,
+                        "currency": "usd",
+                        "resolved_report_count": 990,
+                        "submission_state": "open",
+                        "triage_active": True,
+                        "response_efficiency_percentage": 95,
+                        "bounties_total": "10M+",
+                        "about": "HackerOne program",
+                        "industry": "Technology",
+                        "structured_scopes": {
+                            "edges": [
+                                {"node": {
+                                    "asset_identifier": "hackerone.com",
+                                    "asset_type": "URL",
+                                    "eligible_for_bounty": True,
+                                    "eligible_for_submission": True,
+                                }},
+                            ]
+                        },
+                        "bounty_table": None,
+                    }},
+                    {"node": {
+                        "handle": "anthropic",
+                        "name": "Anthropic",
+                        "url": "https://hackerone.com/anthropic",
+                        "offers_bounties": True,
+                        "minimum_bounty": 50,
+                        "average_bounty_upper_amount": 1600,
+                        "average_bounty_lower_amount": 1000,
+                        "currency": "usd",
+                        "resolved_report_count": 289,
+                        "submission_state": "open",
+                        "triage_active": True,
+                        "response_efficiency_percentage": 98,
+                        "bounties_total": "2M+",
+                        "about": "AI safety company",
+                        "industry": "Professional Services",
+                        "structured_scopes": {
+                            "edges": [
+                                {"node": {
+                                    "asset_identifier": "claude.ai",
+                                    "asset_type": "URL",
+                                    "eligible_for_bounty": True,
+                                    "eligible_for_submission": True,
+                                }},
+                            ]
+                        },
+                        "bounty_table": None,
+                    }},
+                ]
+            }
+        }
+    }
+
+
 # ── Program dataclass ───────────────────────────────────────────────────
 
 class TestProgram:
@@ -161,6 +230,66 @@ class TestProgram:
         assert program.offers_bounties is True
         assert program.resolved_report_count == 289
         assert program.about == "Anthropic is an AI safety company."
+
+    def test_matches_filters_asset(self):
+        """Program.matches_filters with asset filter."""
+        p = Program(handle="test", name="Test")
+        p.scopes = [
+            {"asset_identifier": "*.google.com", "asset_type": "URL"},
+            {"asset_identifier": "api.example.com", "asset_type": "URL"},
+        ]
+        # Asset filter matches any scope
+        f = SearchFilters(asset="google.com")
+        assert p.matches_filters(f) is True
+
+        f2 = SearchFilters(asset="microsoft.com")
+        assert p.matches_filters(f2) is False
+
+    def test_matches_filters_paid(self):
+        """Program.matches_filters with paid/unpaid filter."""
+        p1 = Program(handle="paid", name="Paid", offers_bounties=True, minimum_bounty=100)
+        p2 = Program(handle="vdp", name="VDP", offers_bounties=False)
+
+        assert p1.matches_filters(SearchFilters(paid=True)) is True
+        assert p2.matches_filters(SearchFilters(paid=True)) is False
+        assert p1.matches_filters(SearchFilters(paid=False)) is False
+        assert p2.matches_filters(SearchFilters(paid=False)) is True
+
+    def test_matches_filters_min_bounty(self):
+        """Program.matches_filters with min_bounty filter."""
+        p = Program(handle="test", name="Test", offers_bounties=True, minimum_bounty=500)
+        assert p.matches_filters(SearchFilters(min_bounty=100)) is True
+        assert p.matches_filters(SearchFilters(min_bounty=500)) is True
+        assert p.matches_filters(SearchFilters(min_bounty=1000)) is False
+        # Program with no minimum_bounty
+        p2 = Program(handle="none", name="None", offers_bounties=True, minimum_bounty=None)
+        assert p2.matches_filters(SearchFilters(min_bounty=500)) is False
+
+    def test_matches_filters_min_reports(self):
+        """Program.matches_filters with min_reports filter."""
+        p = Program(handle="test", name="Test", resolved_report_count=200)
+        assert p.matches_filters(SearchFilters(min_reports=50)) is True
+        assert p.matches_filters(SearchFilters(min_reports=200)) is True
+        assert p.matches_filters(SearchFilters(min_reports=500)) is False
+
+    def test_matches_filters_combined(self):
+        """Program.matches_filters with multiple filters."""
+        p = Program(handle="test", name="Test", offers_bounties=True,
+                     minimum_bounty=500, resolved_report_count=200)
+        p.scopes = [{"asset_identifier": "*.google.com", "asset_type": "URL"}]
+
+        # All match
+        f = SearchFilters(asset="google", paid=True, min_bounty=100, min_reports=50)
+        assert p.matches_filters(f) is True
+
+        # One mismatch
+        f2 = SearchFilters(asset="google", paid=True, min_bounty=1000, min_reports=50)
+        assert p.matches_filters(f2) is False
+
+    def test_matches_filters_none(self):
+        """Empty SearchFilters matches everything."""
+        p = Program(handle="test", name="Test")
+        assert p.matches_filters(SearchFilters()) is True
 
 
 class TestBountyTable:
@@ -274,6 +403,209 @@ class TestH1ClientSearch:
 
         programs, total = client.search_programs(query="anthropic")
         assert total == 454
+
+
+# ── GraphQL search with structured filters ───────────────────────────────
+
+class TestH1ClientGraphQLSearch:
+    """Tests for search_programs_graphql with structured filters."""
+
+    def test_search_all(self, client, httpx_mock: HTTPXMock, multi_graphql_response):
+        """Basic GraphQL search with no filters returns all programs."""
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=multi_graphql_response,
+        )
+
+        programs = client.search_programs_graphql(limit=25)
+
+        assert len(programs) == 2
+        assert programs[0].handle == "security"
+        assert programs[1].handle == "anthropic"
+
+        # Verify the query has no structured_scopes filter (just keyword in policy)
+        request = httpx_mock.get_requests()[0]
+        body = request.content.decode()
+        assert "structured_scopes" not in body or "_ilike" not in body
+
+    def test_search_by_asset(self, client, httpx_mock: HTTPXMock, multi_graphql_response):
+        """Search filtering by asset identifier."""
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=multi_graphql_response,
+        )
+
+        programs = client.search_programs_graphql(
+            filters=SearchFilters(asset="claude.ai"),
+        )
+
+        # Both programs are returned from GraphQL, but client-side filtering
+        # should reduce to only the one with matching asset
+        assert len(programs) == 1
+        assert programs[0].handle == "anthropic"
+
+    def test_search_by_keyword(self, client, httpx_mock: HTTPXMock, multi_graphql_response):
+        """Search by keyword in policy text."""
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=multi_graphql_response,
+        )
+
+        programs = client.search_programs_graphql(
+            keyword="safety",
+        )
+        assert len(programs) == 2  # Both have content
+
+        # Verify keyword was in the query
+        request = httpx_mock.get_requests()[0]
+        body = request.content.decode()
+        assert "safety" in body
+
+    def test_search_paid_only(self, client, httpx_mock: HTTPXMock, multi_graphql_response):
+        """Search filtering paid programs only (via GraphQL where clause)."""
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=multi_graphql_response,
+        )
+
+        programs = client.search_programs_graphql(
+            filters=SearchFilters(paid=True),
+        )
+        assert len(programs) == 2  # Both offer bounties
+
+    def test_search_unpaid(self, client, httpx_mock: HTTPXMock):
+        """Search for unpaid/VDP programs."""
+        resp = {
+            "data": {
+                "teams": {
+                    "edges": [
+                        {"node": {
+                            "handle": "vdp-prog",
+                            "name": "VDP Program",
+                            "url": "https://hackerone.com/vdp-prog",
+                            "offers_bounties": False,
+                            "minimum_bounty": None,
+                            "resolved_report_count": 5,
+                            "submission_state": "open",
+                            "triage_active": False,
+                            "structured_scopes": {"edges": []},
+                            "bounty_table": None,
+                        }},
+                    ]
+                }
+            }
+        }
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=resp,
+        )
+
+        programs = client.search_programs_graphql(
+            filters=SearchFilters(paid=False),
+        )
+        assert len(programs) == 1
+        assert programs[0].handle == "vdp-prog"
+
+    def test_search_by_min_bounty_client_side(self, client, httpx_mock: HTTPXMock, multi_graphql_response):
+        """min_bounty is filtered client-side since GraphQL doesn't support it in where."""
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=multi_graphql_response,
+        )
+
+        programs = client.search_programs_graphql(
+            filters=SearchFilters(min_bounty=200),
+        )
+        # Only HackerOne (min_bounty=200), not Anthropic (min_bounty=50)
+        assert len(programs) == 1
+        assert programs[0].handle == "security"
+
+    def test_search_by_min_reports_client_side(self, client, httpx_mock: HTTPXMock, multi_graphql_response):
+        """min_reports is filtered client-side."""
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=multi_graphql_response,
+        )
+
+        programs = client.search_programs_graphql(
+            filters=SearchFilters(min_reports=500),
+        )
+        # Only HackerOne (990 resolved), not Anthropic (289)
+        assert len(programs) == 1
+        assert programs[0].handle == "security"
+
+    def test_search_combined_filters(self, client, httpx_mock: HTTPXMock, multi_graphql_response):
+        """Multiple filters combine correctly."""
+        # First call: asset=claude.ai + min_bounty>=200 → zero results
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=multi_graphql_response,
+        )
+
+        programs = client.search_programs_graphql(
+            filters=SearchFilters(asset="claude.ai", min_bounty=200),
+        )
+        assert len(programs) == 0  # Anthropic has min_bounty=50 < 200
+
+        # Second call: asset=hackerone + min_reports>=500 → only HackerOne
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=multi_graphql_response,
+        )
+
+        programs = client.search_programs_graphql(
+            filters=SearchFilters(asset="hackerone.com", min_reports=500),
+        )
+        assert len(programs) == 1
+        assert programs[0].handle == "security"
+
+    def test_search_sort_by_bounty(self, client, httpx_mock: HTTPXMock, multi_graphql_response):
+        """Sort results by minimum bounty descending."""
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=multi_graphql_response,
+        )
+
+        programs = client.search_programs_graphql(
+            sort="minimum_bounty",
+        )
+        # HackerOne (200) > Anthropic (50)
+        assert programs[0].handle == "security"
+
+    def test_search_sort_by_reports(self, client, httpx_mock: HTTPXMock, multi_graphql_response):
+        """Sort results by resolved report count."""
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=multi_graphql_response,
+        )
+
+        programs = client.search_programs_graphql(
+            sort="resolved_report_count",
+        )
+        # HackerOne (990) > Anthropic (289)
+        assert programs[0].handle == "security"
+
+    def test_search_empty_results(self, client, httpx_mock: HTTPXMock):
+        """Empty GraphQL response returns empty list."""
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json={"data": {"teams": {"edges": []}}},
+        )
+
+        programs = client.search_programs_graphql()
+        assert programs == []
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────

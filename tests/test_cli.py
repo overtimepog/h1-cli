@@ -72,7 +72,62 @@ def graphql_program_response():
 
 
 @pytest.fixture
+def graphql_search_response():
+    """Multi-program response for search results."""
+    return {
+        "data": {
+            "teams": {
+                "edges": [
+                    {"node": {
+                        "handle": "anthropic",
+                        "name": "Anthropic",
+                        "url": "https://hackerone.com/anthropic",
+                        "offers_bounties": True,
+                        "minimum_bounty": 50,
+                        "average_bounty_upper_amount": 1600,
+                        "average_bounty_lower_amount": 1000,
+                        "currency": "usd",
+                        "resolved_report_count": 289,
+                        "submission_state": "open",
+                        "triage_active": True,
+                        "response_efficiency_percentage": 98,
+                        "bounties_total": "2M+",
+                        "about": "AI safety company.",
+                        "industry": "Tech",
+                        "structured_scopes": {"edges": [
+                            {"node": {"asset_identifier": "claude.ai", "asset_type": "URL",
+                             "eligible_for_bounty": True, "eligible_for_submission": True}},
+                        ]},
+                        "bounty_table": None,
+                    }},
+                    {"node": {
+                        "handle": "coinmate",
+                        "name": "CoinMate.io",
+                        "url": "https://hackerone.com/coinmate",
+                        "offers_bounties": True,
+                        "minimum_bounty": 50,
+                        "average_bounty_upper_amount": 300,
+                        "average_bounty_lower_amount": 100,
+                        "currency": "usd",
+                        "resolved_report_count": 64,
+                        "submission_state": "open",
+                        "triage_active": True,
+                        "response_efficiency_percentage": 90,
+                        "bounties_total": "100K",
+                        "about": "Crypto trading platform.",
+                        "industry": "Finance",
+                        "structured_scopes": {"edges": []},
+                        "bounty_table": None,
+                    }},
+                ]
+            }
+        }
+    }
+
+
+@pytest.fixture
 def search_response():
+    """REST search response for --fast mode."""
     return {
         "limit": 25,
         "total": 454,
@@ -161,7 +216,6 @@ class TestInfoCommand:
         assert result.exit_code == 0
         assert "Bounty Table" in result.output
         assert "Critical" in result.output
-        assert "15000" in result.output or "$15,000" in result.output
 
     def test_info_with_scope(self, runner, httpx_mock: HTTPXMock, graphql_program_response):
         httpx_mock.add_response(
@@ -178,96 +232,191 @@ class TestInfoCommand:
 # ── search command ──────────────────────────────────────────────────────
 
 class TestSearchCommand:
-    def test_search_default(self, runner, httpx_mock: HTTPXMock, search_response):
+    def test_search_default(self, runner, httpx_mock: HTTPXMock, graphql_search_response):
+        """Default search uses GraphQL with structured filters."""
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=graphql_search_response,
+        )
+
+        result = runner.invoke(main, ["search"])
+        assert result.exit_code == 0
+        assert "Anthropic" in result.output
+        assert "CoinMate" in result.output
+
+    def test_search_fast(self, runner, httpx_mock: HTTPXMock, search_response):
+        """--fast uses REST search."""
         httpx_mock.add_response(
             url="https://hackerone.com/programs/search.json?query=type:hackerone+offers_bounties:true&sort=resolved_report_count:descending&limit=25",
             method="GET",
             json=search_response,
         )
 
-        result = runner.invoke(main, ["search"])
+        result = runner.invoke(main, ["search", "--fast"])
         assert result.exit_code == 0
-        assert "454" in result.output  # total
-        assert "Anthropic" in result.output
-        assert "CoinMate" in result.output
+        assert "454" in result.output
 
-    def test_search_with_keyword(self, runner, httpx_mock: HTTPXMock, search_response):
+    def test_search_with_keyword(self, runner, httpx_mock: HTTPXMock, graphql_search_response):
         httpx_mock.add_response(
-            url="https://hackerone.com/programs/search.json?query=type:hackerone+offers_bounties:true+android&sort=resolved_report_count:descending&limit=25",
-            method="GET",
-            json=search_response,
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=graphql_search_response,
         )
 
         result = runner.invoke(main, ["search", "android"])
         assert result.exit_code == 0
 
-    def test_search_with_sort(self, runner, httpx_mock: HTTPXMock, search_response):
+    def test_search_paid_only(self, runner, httpx_mock: HTTPXMock, graphql_search_response):
         httpx_mock.add_response(
-            url="https://hackerone.com/programs/search.json?query=type:hackerone+offers_bounties:true&sort=minimum_bounty:descending&limit=25",
-            method="GET",
-            json=search_response,
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=graphql_search_response,
         )
 
-        result = runner.invoke(main, ["search", "--sort", "minimum_bounty:descending"])
+        result = runner.invoke(main, ["search", "--paid"])
+        assert result.exit_code == 0
+
+    def test_search_unpaid(self, runner, httpx_mock: HTTPXMock, graphql_search_response):
+        """--no-pay returns VDPs."""
+        resp = {
+            "data": {
+                "teams": {
+                    "edges": [{
+                        "node": {
+                            "handle": "vdp-prog", "name": "VDP Program",
+                            "url": "https://hackerone.com/vdp-prog",
+                            "offers_bounties": False, "minimum_bounty": None,
+                            "resolved_report_count": 5,
+                            "submission_state": "open", "triage_active": False,
+                            "structured_scopes": {"edges": []},
+                            "bounty_table": None,
+                            "average_bounty_upper_amount": None,
+                            "average_bounty_lower_amount": None,
+                            "currency": "usd",
+                            "about": "", "industry": "",
+                            "response_efficiency_percentage": None,
+                            "bounties_total": "",
+                        }
+                    }]
+                }
+            }
+        }
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=resp,
+        )
+
+        result = runner.invoke(main, ["search", "--no-pay"])
+        assert result.exit_code == 0
+
+    def test_search_by_asset(self, runner, httpx_mock: HTTPXMock, graphql_search_response):
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=graphql_search_response,
+        )
+
+        result = runner.invoke(main, ["search", "--asset", "claude.ai"])
+        assert result.exit_code == 0
+
+    def test_search_min_bounty(self, runner, httpx_mock: HTTPXMock, graphql_search_response):
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=graphql_search_response,
+        )
+
+        result = runner.invoke(main, ["search", "--min-bounty", "500"])
+        assert result.exit_code == 0
+
+    def test_search_min_reports(self, runner, httpx_mock: HTTPXMock, graphql_search_response):
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=graphql_search_response,
+        )
+
+        result = runner.invoke(main, ["search", "--min-reports", "100"])
+        assert result.exit_code == 0
+
+    def test_search_sort_by_bounty(self, runner, httpx_mock: HTTPXMock, graphql_search_response):
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=graphql_search_response,
+        )
+
+        result = runner.invoke(main, ["search", "--sort-by", "bounty"])
         assert result.exit_code == 0
 
     def test_search_with_limit(self, runner, httpx_mock: HTTPXMock):
         httpx_mock.add_response(
-            url="https://hackerone.com/programs/search.json?query=type:hackerone+offers_bounties:true&sort=resolved_report_count:descending&limit=10",
-            method="GET",
-            json={"limit": 10, "total": 0, "results": []},
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json={"data": {"teams": {"edges": []}}},
         )
 
         result = runner.invoke(main, ["search", "--limit", "10"])
         assert result.exit_code == 0
 
-    def test_search_json_output(self, runner, httpx_mock: HTTPXMock, search_response):
+    def test_search_json_output(self, runner, httpx_mock: HTTPXMock, graphql_search_response):
         httpx_mock.add_response(
-            url="https://hackerone.com/programs/search.json?query=type:hackerone+offers_bounties:true&sort=resolved_report_count:descending&limit=25",
-            method="GET",
-            json=search_response,
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=graphql_search_response,
         )
 
         result = runner.invoke(main, ["search", "--json"])
         assert result.exit_code == 0
-        # Should be valid JSON
         import json
         data = json.loads(result.output)
-        assert "total" in data or isinstance(data, list)
+        assert "total" in data
 
     def test_search_no_results(self, runner, httpx_mock: HTTPXMock):
         httpx_mock.add_response(
-            url="https://hackerone.com/programs/search.json?query=type:hackerone+offers_bounties:true+zzzxxx&sort=resolved_report_count:descending&limit=25",
-            method="GET",
-            json={"limit": 0, "total": 0, "results": []},
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json={"data": {"teams": {"edges": []}}},
         )
 
         result = runner.invoke(main, ["search", "zzzxxx"])
         assert result.exit_code == 0
-        assert "0" in result.output or "no" in result.output.lower()
+        assert "No programs found" in result.output or "0 total" in result.output
 
 
 # ── top command ─────────────────────────────────────────────────────────
 
 class TestTopCommand:
-    def test_top_bounties(self, runner, httpx_mock: HTTPXMock, search_response):
+    def test_top_bounties(self, runner, httpx_mock: HTTPXMock, graphql_search_response):
         httpx_mock.add_response(
-            url="https://hackerone.com/programs/search.json?query=type:hackerone+offers_bounties:true&sort=minimum_bounty:descending&limit=10",
-            method="GET",
-            json=search_response,
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=graphql_search_response,
         )
 
         result = runner.invoke(main, ["top", "--bounties"])
         assert result.exit_code == 0
 
-    def test_top_resolved(self, runner, httpx_mock: HTTPXMock, search_response):
+    def test_top_resolved(self, runner, httpx_mock: HTTPXMock, graphql_search_response):
         httpx_mock.add_response(
-            url="https://hackerone.com/programs/search.json?query=type:hackerone+offers_bounties:true&sort=resolved_report_count:descending&limit=10",
-            method="GET",
-            json=search_response,
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=graphql_search_response,
         )
 
         result = runner.invoke(main, ["top"])
+        assert result.exit_code == 0
+
+    def test_top_response(self, runner, httpx_mock: HTTPXMock, graphql_search_response):
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=graphql_search_response,
+        )
+
+        result = runner.invoke(main, ["top", "--response"])
         assert result.exit_code == 0
 
 

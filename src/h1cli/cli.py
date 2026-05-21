@@ -13,7 +13,7 @@ from rich.panel import Panel
 from rich.text import Text
 from rich import box
 
-from .client import H1Client, Program
+from .client import H1Client, Program, SearchFilters
 
 
 console = Console()
@@ -88,31 +88,71 @@ def main(ctx):
 
 @main.command()
 @click.argument("keyword", required=False, default="")
-@click.option("--sort", "-s", default="resolved_report_count:descending",
-              help="Sort order (default: resolved_report_count:descending)")
+@click.option("--paid/--no-pay", "paid", default=None,
+              help="Filter: paid bounty programs vs VDPs (no bounty)")
+@click.option("--asset", "-a", default=None,
+              help="Filter by asset in scope (e.g. 'google.com', '*.aws.amazon.com')")
+@click.option("--min-bounty", "-mb", default=None, type=int,
+              help="Minimum bounty amount in USD (e.g. 500)")
+@click.option("--min-reports", "-mr", default=None, type=int,
+              help="Minimum resolved reports (e.g. 100)")
+@click.option("--sort-by", "-s",
+              type=click.Choice(["reports", "bounty", "response"]),
+              default="reports",
+              help="Sort results by (default: reports)")
 @click.option("--limit", "-n", default=25, type=int,
               help="Number of results (default: 25)")
 @click.option("--json", "output_json", is_flag=True,
               help="Output as JSON")
-@click.option("--filter", "-f", "filters_raw", multiple=True,
-              help="Extra filters (e.g. 'minimum_bounty:>500')")
-def search(keyword: str, sort: str, limit: int, output_json: bool,
-           filters_raw: tuple[str, ...]):
-    """Search HackerOne bounty programs.
+@click.option("--fast", is_flag=True,
+              help="Use REST search (faster, fewer filter options)")
+def search(keyword: str, paid: bool | None, asset: str | None,
+           min_bounty: int | None, min_reports: int | None,
+           sort_by: str, limit: int, output_json: bool, fast: bool):
+    """Search HackerOne bounty programs with powerful filters.
 
-    KEYWORD: optional search term to filter programs by name/handle.
+    \b
+    KEYWORD: optional search term (matches in program name/policy).
+
+    \b
+    Examples:
+      h1 search android --paid               Paid Android programs
+      h1 search --asset=google.com            Programs with google.com in scope
+      h1 search --min-bounty=500 --paid       Paid programs with $500+ minimum
+      h1 search --min-reports=100             Established programs (100+ resolved)
+      h1 search --no-pay --asset=example.com  VDPs with example.com in scope
+      h1 search --fast google                 Quick REST search (keyword only)
     """
-    filters = {}
-    for f in filters_raw:
-        if ":" in f:
-            k, v = f.split(":", 1)
-            filters[k.strip()] = v.strip()
+    sort_map = {
+        "reports": "resolved_report_count",
+        "bounty": "minimum_bounty",
+        "response": "response_efficiency_percentage",
+    }
+    gql_sort = sort_map.get(sort_by, "resolved_report_count")
 
     with H1Client() as client:
         try:
-            programs, total = client.search_programs(
-                query=keyword, sort=sort, limit=limit, filters=filters or None
-            )
+            if fast and not any([paid is not None, asset, min_bounty, min_reports]):
+                # Use REST for simple keyword searches
+                programs, total = client.search_programs(
+                    query=keyword, limit=limit,
+                )
+            else:
+                # Use GraphQL with structured filters
+                filters = SearchFilters(
+                    keyword=keyword,
+                    asset=asset or "",
+                    paid=paid,
+                    min_bounty=min_bounty,
+                    min_reports=min_reports,
+                )
+                programs = client.search_programs_graphql(
+                    keyword=keyword,
+                    filters=filters,
+                    sort=gql_sort,
+                    limit=limit,
+                )
+                total = len(programs)
         except Exception as e:
             error_console.print(f"[red]Error:[/red] {e}")
             sys.exit(1)
@@ -130,6 +170,7 @@ def search(keyword: str, sort: str, limit: int, output_json: bool,
                     "resolved_report_count": p.resolved_report_count,
                     "triage_active": p.triage_active,
                     "about": p.about,
+                    "scopes_count": len(p.scopes),
                 }
                 for p in programs
             ]},
@@ -141,8 +182,22 @@ def search(keyword: str, sort: str, limit: int, output_json: bool,
         console.print(f"[yellow]No programs found[/yellow] ({total} total)")
         return
 
+    # Build active filters indicator
+    active_filters = []
+    if paid is True:
+        active_filters.append("paid")
+    elif paid is False:
+        active_filters.append("VDP")
+    if asset:
+        active_filters.append(f"asset={asset}")
+    if min_bounty:
+        active_filters.append(f"min ${min_bounty}")
+    if min_reports:
+        active_filters.append(f"{min_reports}+ reports")
+    filter_str = f" [{', '.join(active_filters)}]" if active_filters else ""
+
     table = Table(
-        title=f"HackerOne Programs ({total} total, showing {len(programs)})",
+        title=f"HackerOne Programs ({total} total, showing {len(programs)}){filter_str}",
         box=box.ROUNDED,
         show_header=True,
         header_style="bold cyan",
@@ -332,18 +387,23 @@ def info(handle: str, bounties: bool, scope: bool, output_json: bool):
 def top(sort_by_bounty: bool, sort_by_response: bool, limit: int, output_json: bool):
     """Show top programs by various metrics."""
     if sort_by_bounty:
-        sort = "minimum_bounty:descending"
+        sort = "minimum_bounty"
         title = "Highest Bounties"
     elif sort_by_response:
-        sort = "response_efficiency_percentage:ascending"
+        sort = "response_efficiency_percentage"
         title = "Fastest Response"
     else:
-        sort = "resolved_report_count:descending"
+        sort = "resolved_report_count"
         title = "Most Resolved Reports"
 
     with H1Client() as client:
         try:
-            programs, total = client.search_programs(sort=sort, limit=limit)
+            programs = client.search_programs_graphql(
+                filters=SearchFilters(paid=True),
+                sort=sort,
+                limit=limit,
+            )
+            total = len(programs)
         except Exception as e:
             error_console.print(f"[red]Error:[/red] {e}")
             sys.exit(1)

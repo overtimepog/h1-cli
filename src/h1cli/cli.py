@@ -86,7 +86,7 @@ def main(ctx):
     Search, browse, and analyze bug bounty programs from HackerOne.
     No API key required — uses HackerOne's public API.
 
-    \\b
+    \b
     Examples:
       h1 search android          Search for Android-related programs
       h1 info anthropic          Show detailed info on Anthropic's program
@@ -474,7 +474,7 @@ def hacktivity(program: str | None, limit: int, output_json: bool):
 
     Shows recently disclosed vulnerabilities with severity, bounty, and reporter info.
 
-    \\b
+    \b
     Examples:
       h1 hacktivity                     Latest 25 disclosed reports
       h1 hacktivity -p anthropic        Only Anthropic's disclosed reports
@@ -555,7 +555,7 @@ def policy(handle: str, output_json: bool):
     Displays the full policy text including scope, out-of-scope,
     rewards, and submission guidelines.
 
-    \\b
+    \b
     Examples:
       h1 policy anthropic             Show Anthropic's bug bounty policy
       h1 policy vercel --json         JSON output

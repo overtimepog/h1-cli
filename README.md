@@ -4,6 +4,18 @@ HackerOne bounty program CLI — search, browse, and analyze bug bounty programs
 
 No API key required. Uses HackerOne's public GraphQL and REST APIs.
 
+## Features
+
+- **No auth needed** — uses HackerOne's public GraphQL and REST APIs
+- **Rich terminal output** — tables, colors, formatting via `rich`
+- **Structured search filters** — filter by asset, paid/VDP, min bounty, min reports
+- **Hacktivity feed** — browse publicly disclosed reports with severity, bounty, reporter info
+- **Guidelines viewer** — read program policy, scope, and out-of-scope rules via `--guidelines`
+- **Bounty tables** — severity → payout mappings with `--bounties`
+- **Scope listing** — in-scope assets with `--scope`
+- **JSON output** — pipe into `jq` or other tools with `--json` on every command
+- **Color-coded severities** — critical (red), high, medium (yellow), low (green)
+
 ## Install
 
 ```bash
@@ -118,18 +130,6 @@ h1 hacktivity -n 10
 # JSON output
 h1 hacktivity -p vercel --json
 ```
-
-## Features
-
-- **No auth needed** — uses HackerOne's public GraphQL and REST APIs
-- **Rich terminal output** — tables, colors, formatting via `rich`
-- **Structured search filters** — filter by asset, paid/VDP, min bounty, min reports
-- **Hacktivity feed** — browse publicly disclosed reports with severity, bounty, reporter info
-- **Guidelines viewer** — read program policy, scope, and out-of-scope rules via `--guidelines`
-- **Bounty tables** — severity → payout mappings with `--bounties`
-- **Scope listing** — in-scope assets with `--scope`
-- **JSON output** — pipe into `jq` or other tools with `--json` on every command
-- **Color-coded severities** — critical (red), high, medium (yellow), low (green)
 
 ## Development
 

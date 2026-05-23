@@ -13,7 +13,7 @@ from rich.panel import Panel
 from rich.text import Text
 from rich import box
 
-from .client import H1Client, Program, SearchFilters
+from .client import H1Client, Program, SearchFilters, HacktivityItem
 
 
 console = Console()
@@ -63,10 +63,22 @@ def _fmt_time_ago(iso_string: str | None) -> str:
         return iso_string[:10]
 
 
+def _fmt_severity(severity: str) -> str:
+    """Format a severity rating with color."""
+    colors = {
+        "critical": "[bold red]CRITICAL[/bold red]",
+        "high": "[red]HIGH[/red]",
+        "medium": "[yellow]MEDIUM[/yellow]",
+        "low": "[green]LOW[/green]",
+        "none": "[dim]NONE[/dim]",
+    }
+    return colors.get(severity.lower() if severity else "none", severity.upper())
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────
 
 @click.group(invoke_without_command=True)
-@click.version_option(version="0.1.0", prog_name="h1")
+@click.version_option(version="0.2.0", prog_name="h1")
 @click.pass_context
 def main(ctx):
     """h1 — HackerOne bounty program explorer for the terminal.
@@ -74,12 +86,15 @@ def main(ctx):
     Search, browse, and analyze bug bounty programs from HackerOne.
     No API key required — uses HackerOne's public API.
 
-    \b
+    \\b
     Examples:
       h1 search android          Search for Android-related programs
       h1 info anthropic          Show detailed info on Anthropic's program
       h1 info anthropic -b       Show bounty table for Anthropic
       h1 top --bounties          Top programs by max bounty
+      h1 hacktivity              Browse publicly disclosed reports
+      h1 hacktivity -p anthropic Anthropic's disclosed reports
+      h1 policy anthropic        Show Anthropic's security policy
       h1 search google --json    JSON output for scripting
     """
     if ctx.invoked_subcommand is None:
@@ -445,6 +460,141 @@ def top(sort_by_bounty: bool, sort_by_response: bool, limit: int, output_json: b
         )
 
     console.print(table)
+
+
+@main.command()
+@click.option("--program", "-p", default=None,
+              help="Filter by program handle (e.g. 'anthropic')")
+@click.option("--limit", "-n", default=25, type=int,
+              help="Number of results (default: 25)")
+@click.option("--json", "output_json", is_flag=True,
+              help="Output as JSON")
+def hacktivity(program: str | None, limit: int, output_json: bool):
+    """Browse publicly disclosed reports from HackerOne's hacktivity feed.
+
+    Shows recently disclosed vulnerabilities with severity, bounty, and reporter info.
+
+    \\b
+    Examples:
+      h1 hacktivity                     Latest 25 disclosed reports
+      h1 hacktivity -p anthropic        Only Anthropic's disclosed reports
+      h1 hacktivity -n 10 --json        JSON output for scripting
+    """
+    with H1Client() as client:
+        try:
+            items = client.get_hacktivity(limit=limit, handle=program)
+        except Exception as e:
+            error_console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    if output_json:
+        print(json.dumps([
+            {
+                "report_id": i.report_id,
+                "title": i.title,
+                "url": i.url,
+                "severity": i.severity,
+                "bounty_amount": i.bounty_amount,
+                "currency": i.currency,
+                "reporter": i.reporter_username,
+                "program": i.program_handle,
+                "program_name": i.program_name,
+                "disclosed_at": i.disclosed_at,
+            }
+            for i in items
+        ], indent=2))
+        return
+
+    if not items:
+        console.print("[yellow]No hacktivity items found.[/yellow]")
+        return
+
+    title_str = "HackerOne Hacktivity"
+    if program:
+        title_str += f" — {program}"
+    title_str += f" ({len(items)} items)"
+
+    table = Table(
+        title=title_str,
+        box=box.ROUNDED,
+        header_style="bold cyan",
+    )
+    table.add_column("#", style="dim", width=4)
+    table.add_column("Report", style="bold", max_width=50)
+    table.add_column("Severity", justify="center")
+    table.add_column("Bounty", justify="right")
+    table.add_column("Program", max_width=20)
+    table.add_column("Reporter")
+    table.add_column("Disclosed", justify="right")
+
+    for i, item in enumerate(items, 1):
+        bounty = _fmt_money(
+            int(item.bounty_amount) if item.bounty_amount else None,
+            item.currency,
+        )
+        table.add_row(
+            str(i),
+            f"[link={item.url}]{item.title}[/link]",
+            _fmt_severity(item.severity),
+            bounty,
+            f"[dim]{item.program_handle}[/dim]",
+            item.reporter_username,
+            _fmt_time_ago(item.disclosed_at),
+        )
+
+    console.print(table)
+
+
+@main.command()
+@click.argument("handle")
+@click.option("--json", "output_json", is_flag=True,
+              help="Output as JSON")
+def policy(handle: str, output_json: bool):
+    """Show a program's security policy / guidelines.
+
+    Displays the full policy text including scope, out-of-scope,
+    rewards, and submission guidelines.
+
+    \\b
+    Examples:
+      h1 policy anthropic             Show Anthropic's bug bounty policy
+      h1 policy vercel --json         JSON output
+    """
+    with H1Client() as client:
+        try:
+            program = client.get_program(handle)
+        except Exception as e:
+            error_console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    if program is None:
+        error_console.print(f"[red]Program '{handle}' not found.[/red]")
+        sys.exit(1)
+
+    if output_json:
+        print(json.dumps({
+            "handle": program.handle,
+            "name": program.name,
+            "url": program.url,
+            "policy": program.stripped_policy or "",
+        }, indent=2))
+        return
+
+    if not program.stripped_policy:
+        console.print(
+            f"[yellow]No policy text available for {program.name}.[/yellow]\n"
+            f"[dim]Visit {program.url} to view the policy.[/dim]"
+        )
+        return
+
+    # Display policy
+    console.print(Panel(
+        program.stripped_policy,
+        title=f"[bold cyan]Policy: {program.name}[/bold cyan]",
+        subtitle=f"[dim]{program.url}[/dim]",
+        border_style="cyan",
+        padding=(1, 2),
+    ))
 
 
 if __name__ == "__main__":

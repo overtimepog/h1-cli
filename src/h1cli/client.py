@@ -42,6 +42,7 @@ query($handle: String!) {
         top_bounty_lower_amount
         profile_picture(size: medium)
         internet_bug_bounty
+        stripped_policy
         structured_scopes(first: 200) {
           edges {
             node {
@@ -245,6 +246,7 @@ class Program:
     internet_bug_bounty: bool = False
     scopes: list[dict[str, Any]] = field(default_factory=list)
     bounty_table: BountyTable | None = None
+    stripped_policy: str = ""
 
     @classmethod
     def from_graphql(cls, node: dict) -> Program:
@@ -277,6 +279,7 @@ class Program:
             internet_bug_bounty=node.get("internet_bug_bounty", False),
             scopes=scopes,
             bounty_table=BountyTable.from_graphql(node.get("bounty_table")),
+            stripped_policy=node.get("stripped_policy", ""),
         )
 
     @classmethod
@@ -324,6 +327,79 @@ class Program:
             if (self.resolved_report_count or 0) < filters.min_reports:
                 return False
         return True
+
+
+# GraphQL hacktivity query — publicly disclosed reports
+HACKTIVITY_QUERY = """
+query($first: Int!, $handle: String, $severity: SeverityRatingEnum) {
+  hacktivity_items(
+    first: $first,
+    where: {
+      report: { disclosed_at: { _is_null: false } }
+    },
+    order_by: { field: popular, direction: DESC }
+  ) {
+    edges {
+      node {
+        id
+        report {
+          database_id: _id
+          title
+          url
+          severity_rating
+          bounty_amount
+          currency
+          disclosed_at
+          reporter {
+            username
+            profile_picture(size: small)
+          }
+        }
+        team {
+          handle
+          name
+          url
+        }
+      }
+    }
+  }
+}
+"""
+
+
+@dataclass
+class HacktivityItem:
+    """A publicly disclosed report on HackerOne's hacktivity feed."""
+
+    report_id: int
+    title: str
+    url: str
+    severity: str
+    bounty_amount: str | None
+    currency: str
+    disclosed_at: str | None
+    reporter_username: str
+    reporter_picture: str
+    program_handle: str
+    program_name: str
+
+    @classmethod
+    def from_graphql(cls, node: dict) -> HacktivityItem:
+        report = node.get("report", {})
+        team = node.get("team", {})
+        return cls(
+            report_id=report.get("database_id", 0),
+            title=report.get("title", ""),
+            url=report.get("url", ""),
+            severity=report.get("severity_rating", "none"),
+            bounty_amount=report.get("bounty_amount"),
+            currency=report.get("currency", "usd"),
+            disclosed_at=report.get("disclosed_at"),
+            reporter_username=report.get("reporter", {}).get("username", "anonymous"),
+            reporter_picture=report.get("reporter", {}).get("profile_picture", ""),
+            program_handle=team.get("handle", ""),
+            program_name=team.get("name", ""),
+        )
 
 
 class H1Client:
@@ -468,3 +544,45 @@ class H1Client:
         programs = [Program.from_search(r) for r in data.get("results", [])]
         total = data.get("total", 0)
         return programs, total
+
+    # ── Hacktivity ───────────────────────────────────────────────────
+
+    def get_hacktivity(
+        self,
+        limit: int = 25,
+        handle: str | None = None,
+    ) -> list[HacktivityItem]:
+        """Fetch publicly disclosed reports from HackerOne's hacktivity feed.
+
+        Args:
+            limit: Max results (default 25).
+            handle: Optional program handle to filter by.
+
+        Returns:
+            List of HacktivityItem objects sorted by popularity.
+        """
+        variables: dict[str, Any] = {"first": limit}
+        if handle:
+            variables["handle"] = handle
+
+        resp = self._client.post(
+            GRAPHQL_URL,
+            json={
+                "query": HACKTIVITY_QUERY,
+                "variables": variables,
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        edges = data.get("data", {}).get("hacktivity_items", {}).get("edges", [])
+        items = [HacktivityItem.from_graphql(e["node"]) for e in edges]
+
+        # Client-side filter by program handle if specified
+        # (GraphQL where clause on team.handle may not always work)
+        if handle:
+            items = [
+                i for i in items
+                if i.program_handle.lower() == handle.lower()
+            ]
+
+        return items

@@ -4,7 +4,7 @@ import pytest
 import httpx
 from pytest_httpx import HTTPXMock
 
-from h1cli.client import H1Client, Program, BountyTable, SearchFilters
+from h1cli.client import H1Client, Program, BountyTable, SearchFilters, HacktivityItem
 
 
 # ── fixtures ────────────────────────────────────────────────────────────
@@ -630,3 +630,181 @@ class TestHelpers:
         assert "type:hackerone" in query
         assert "anthropic" in query
         assert "minimum_bounty:>500" in query
+
+
+# ── Hacktivity fixtures ─────────────────────────────────────────────────
+
+@pytest.fixture
+def sample_hacktivity_response():
+    """GraphQL response for hacktivity_items query."""
+    return {
+        "data": {
+            "hacktivity_items": {
+                "edges": [
+                    {
+                        "node": {
+                            "id": "h1:12345",
+                            "report": {
+                                "database_id": 12345,
+                                "title": "SSRF via webhook leads to internal network access",
+                                "url": "https://hackerone.com/reports/12345",
+                                "severity_rating": "critical",
+                                "bounty_amount": "15000",
+                                "currency": "usd",
+                                "disclosed_at": "2024-06-15T10:30:00Z",
+                                "reporter": {
+                                    "username": "alice_hacker",
+                                    "profile_picture": "https://example.com/alice.jpg",
+                                },
+                            },
+                            "team": {
+                                "handle": "security",
+                                "name": "HackerOne",
+                                "url": "https://hackerone.com/security",
+                            },
+                        }
+                    },
+                    {
+                        "node": {
+                            "id": "h1:67890",
+                            "report": {
+                                "database_id": 67890,
+                                "title": "XSS in comment field bypasses CSP",
+                                "url": "https://hackerone.com/reports/67890",
+                                "severity_rating": "high",
+                                "bounty_amount": "2500",
+                                "currency": "usd",
+                                "disclosed_at": "2024-06-14T08:00:00Z",
+                                "reporter": {
+                                    "username": "bob_researcher",
+                                    "profile_picture": "https://example.com/bob.jpg",
+                                },
+                            },
+                            "team": {
+                                "handle": "anthropic",
+                                "name": "Anthropic",
+                                "url": "https://hackerone.com/anthropic",
+                            },
+                        }
+                    },
+                ]
+            }
+        }
+    }
+
+
+@pytest.fixture
+def hacktivity_empty_response():
+    return {"data": {"hacktivity_items": {"edges": []}}}
+
+
+# ── HacktivityItem ──────────────────────────────────────────────────────
+
+class TestHacktivityItem:
+    def test_from_graphql(self, sample_hacktivity_response):
+        node = sample_hacktivity_response["data"]["hacktivity_items"]["edges"][0]["node"]
+        item = HacktivityItem.from_graphql(node)
+
+        assert item.report_id == 12345
+        assert item.title == "SSRF via webhook leads to internal network access"
+        assert item.severity == "critical"
+        assert item.bounty_amount == "15000"
+        assert item.currency == "usd"
+        assert item.reporter_username == "alice_hacker"
+        assert item.program_handle == "security"
+        assert item.program_name == "HackerOne"
+
+    def test_from_graphql_minimal(self):
+        node = {
+            "report": {
+                "database_id": 1,
+                "title": "Test",
+                "url": "https://hackerone.com/reports/1",
+                "severity_rating": "none",
+                "bounty_amount": None,
+                "currency": "usd",
+                "disclosed_at": None,
+                "reporter": {"username": "anon", "profile_picture": ""},
+            },
+            "team": {"handle": "test", "name": "Test Program", "url": "https://hackerone.com/test"},
+        }
+        item = HacktivityItem.from_graphql(node)
+        assert item.report_id == 1
+        assert item.severity == "none"
+        assert item.bounty_amount is None
+        assert item.disclosed_at is None
+
+
+# ── H1Client get_hacktivity() ───────────────────────────────────────────
+
+class TestH1ClientHacktivity:
+    def test_get_hacktivity(self, client, httpx_mock: HTTPXMock, sample_hacktivity_response):
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=sample_hacktivity_response,
+        )
+
+        items = client.get_hacktivity(limit=10)
+
+        assert len(items) == 2
+        assert items[0].title == "SSRF via webhook leads to internal network access"
+        assert items[0].program_handle == "security"
+        assert items[1].program_handle == "anthropic"
+
+    def test_get_hacktivity_by_handle(self, client, httpx_mock: HTTPXMock, sample_hacktivity_response):
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=sample_hacktivity_response,
+        )
+
+        items = client.get_hacktivity(limit=10, handle="anthropic")
+
+        assert len(items) == 1
+        assert items[0].program_handle == "anthropic"
+
+    def test_get_hacktivity_empty(self, client, httpx_mock: HTTPXMock, hacktivity_empty_response):
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=hacktivity_empty_response,
+        )
+
+        items = client.get_hacktivity()
+        assert items == []
+
+    def test_get_hacktivity_http_error(self, client, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            status_code=500,
+        )
+
+        with pytest.raises(httpx.HTTPStatusError):
+            client.get_hacktivity()
+
+
+# ── Program policy (stripped_policy) ────────────────────────────────────
+
+class TestProgramPolicy:
+    def test_stripped_policy_parsed(self, sample_graphql_response):
+        """Verify stripped_policy is parsed from GraphQL response."""
+        sample_graphql_response["data"]["teams"]["edges"][0]["node"]["stripped_policy"] = (
+            "# Program Policy\n\nPlease report security bugs.\n\n## Scope\n\n"
+            "* hackerone.com\n* api.hackerone.com\n\n## Out of Scope\n\n"
+            "* social engineering\n* denial of service"
+        )
+        node = sample_graphql_response["data"]["teams"]["edges"][0]["node"]
+        program = Program.from_graphql(node)
+
+        assert program.stripped_policy != ""
+        assert "security bugs" in program.stripped_policy
+        assert "hackerone.com" in program.stripped_policy
+
+    def test_stripped_policy_missing(self, sample_graphql_response):
+        """Program with no stripped_policy field defaults to empty string."""
+        node = sample_graphql_response["data"]["teams"]["edges"][0]["node"]
+        program = Program.from_graphql(node)
+
+        assert program.stripped_policy == ""

@@ -434,3 +434,250 @@ class TestMainHelp:
         assert "search" in result.output
         assert "info" in result.output
         assert "top" in result.output
+
+
+# ── hacktivity command ──────────────────────────────────────────────────
+
+@pytest.fixture
+def hacktivity_response():
+    return {
+        "data": {
+            "hacktivity_items": {
+                "edges": [
+                    {
+                        "node": {
+                            "id": "h1:12345",
+                            "report": {
+                                "database_id": 12345,
+                                "title": "SSRF via webhook leads to internal network access",
+                                "url": "https://hackerone.com/reports/12345",
+                                "severity_rating": "critical",
+                                "bounty_amount": "15000",
+                                "currency": "usd",
+                                "disclosed_at": "2024-06-15T10:30:00Z",
+                                "reporter": {
+                                    "username": "alice_hacker",
+                                    "profile_picture": "",
+                                },
+                            },
+                            "team": {
+                                "handle": "security",
+                                "name": "HackerOne",
+                                "url": "https://hackerone.com/security",
+                            },
+                        }
+                    },
+                    {
+                        "node": {
+                            "id": "h1:67890",
+                            "report": {
+                                "database_id": 67890,
+                                "title": "XSS in comment field bypasses CSP",
+                                "url": "https://hackerone.com/reports/67890",
+                                "severity_rating": "high",
+                                "bounty_amount": "2500",
+                                "currency": "usd",
+                                "disclosed_at": "2024-06-14T08:00:00Z",
+                                "reporter": {
+                                    "username": "bob_researcher",
+                                    "profile_picture": "",
+                                },
+                            },
+                            "team": {
+                                "handle": "anthropic",
+                                "name": "Anthropic",
+                                "url": "https://hackerone.com/anthropic",
+                            },
+                        }
+                    },
+                ]
+            }
+        }
+    }
+
+
+class TestHacktivityCommand:
+    def test_hacktivity_default(self, runner, httpx_mock: HTTPXMock, hacktivity_response):
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=hacktivity_response,
+        )
+
+        result = runner.invoke(main, ["hacktivity"])
+        assert result.exit_code == 0
+        assert "SSRF" in result.output
+        assert "alice" in result.output
+        assert "HackerOne" in result.output
+
+    def test_hacktivity_with_limit(self, runner, httpx_mock: HTTPXMock, hacktivity_response):
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=hacktivity_response,
+        )
+
+        result = runner.invoke(main, ["hacktivity", "--limit", "5"])
+        assert result.exit_code == 0
+
+    def test_hacktivity_with_program(self, runner, httpx_mock: HTTPXMock, hacktivity_response):
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=hacktivity_response,
+        )
+
+        result = runner.invoke(main, ["hacktivity", "--program", "anthropic"])
+        assert result.exit_code == 0
+
+    def test_hacktivity_empty(self, runner, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json={"data": {"hacktivity_items": {"edges": []}}},
+        )
+
+        result = runner.invoke(main, ["hacktivity"])
+        assert result.exit_code == 0
+        assert "No hacktivity" in result.output or "0" in result.output
+
+    def test_hacktivity_json_output(self, runner, httpx_mock: HTTPXMock, hacktivity_response):
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=hacktivity_response,
+        )
+
+        result = runner.invoke(main, ["hacktivity", "--json"])
+        assert result.exit_code == 0
+        import json
+        data = json.loads(result.output)
+        assert len(data) == 2
+        assert data[0]["title"] == "SSRF via webhook leads to internal network access"
+
+
+# ── policy command ──────────────────────────────────────────────────────
+
+@pytest.fixture
+def policy_program_response():
+    return {
+        "data": {
+            "teams": {
+                "edges": [{
+                    "node": {
+                        "handle": "anthropic",
+                        "name": "Anthropic",
+                        "url": "https://hackerone.com/anthropic",
+                        "offers_bounties": True,
+                        "minimum_bounty": 50,
+                        "average_bounty_upper_amount": 5000,
+                        "average_bounty_lower_amount": 500,
+                        "currency": "usd",
+                        "resolved_report_count": 289,
+                        "created_at": "2023-01-01T00:00:00Z",
+                        "updated_at": "2024-06-01T00:00:00Z",
+                        "about": "Anthropic is an AI safety company.",
+                        "industry": "Technology",
+                        "submission_state": "open",
+                        "triage_active": True,
+                        "bounty_time": 12.0,
+                        "response_efficiency_percentage": 98,
+                        "bounties_total": "2M+",
+                        "stripped_policy": (
+                            "# Program Policy\n\n"
+                            "Please report security bugs to our program.\n\n"
+                            "## Scope\n\n"
+                            "* *.anthropic.com\n"
+                            "* claude.ai\n\n"
+                            "## Out of Scope\n\n"
+                            "* Social engineering\n"
+                            "* Denial of service attacks\n\n"
+                            "## Rewards\n\n"
+                            "Bounties range from $500 to $15,000."
+                        ),
+                        "structured_scopes": {"edges": []},
+                        "bounty_table": None,
+                    }
+                }]
+            }
+        }
+    }
+
+
+class TestPolicyCommand:
+    def test_policy_by_handle(self, runner, httpx_mock: HTTPXMock, policy_program_response):
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=policy_program_response,
+        )
+
+        result = runner.invoke(main, ["policy", "anthropic"])
+        assert result.exit_code == 0
+        assert "*.anthropic.com" in result.output
+        assert "claude.ai" in result.output
+        assert "Social engineering" in result.output
+        assert "Anthropic" in result.output
+
+    def test_policy_not_found(self, runner, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json={"data": {"teams": {"edges": []}}},
+        )
+
+        result = runner.invoke(main, ["policy", "nonexistent999"])
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()
+
+    def test_policy_no_policy_text(self, runner, httpx_mock: HTTPXMock):
+        """Program exists but has no stripped_policy text."""
+        resp = {
+            "data": {
+                "teams": {
+                    "edges": [{
+                        "node": {
+                            "handle": "testprog",
+                            "name": "Test Program",
+                            "url": "https://hackerone.com/testprog",
+                            "offers_bounties": False,
+                            "minimum_bounty": None,
+                            "average_bounty_upper_amount": None,
+                            "average_bounty_lower_amount": None,
+                            "currency": "usd",
+                            "resolved_report_count": 0,
+                            "submission_state": "open",
+                            "triage_active": False,
+                            "about": "",
+                            "industry": "",
+                            "stripped_policy": None,
+                            "structured_scopes": {"edges": []},
+                            "bounty_table": None,
+                        }
+                    }]
+                }
+            }
+        }
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=resp,
+        )
+
+        result = runner.invoke(main, ["policy", "testprog"])
+        assert result.exit_code == 0
+        assert "No policy" in result.output or "no policy" in result.output.lower()
+
+    def test_policy_json_output(self, runner, httpx_mock: HTTPXMock, policy_program_response):
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=policy_program_response,
+        )
+
+        result = runner.invoke(main, ["policy", "anthropic", "--json"])
+        assert result.exit_code == 0
+        import json
+        data = json.loads(result.output)
+        assert data["handle"] == "anthropic"
+        assert "security bugs" in data["policy"]

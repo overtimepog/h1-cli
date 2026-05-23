@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "h1cli"
-version = "0.1.0"
+version = "0.2.0"
 description = "HackerOne bounty program CLI — search, browse, and analyze bug bounty programs from the terminal"
 readme = "README.md"
 license = {text = "MIT"}

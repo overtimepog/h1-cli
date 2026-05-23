@@ -94,7 +94,7 @@ def main(ctx):
       h1 top --bounties          Top programs by max bounty
       h1 hacktivity              Browse publicly disclosed reports
       h1 hacktivity -p anthropic Anthropic's disclosed reports
-      h1 policy anthropic        Show Anthropic's security policy
+      h1 info anthropic -g       Show Anthropic's security guidelines
       h1 search google --json    JSON output for scripting
     """
     if ctx.invoked_subcommand is None:
@@ -245,10 +245,15 @@ def search(keyword: str, paid: bool | None, asset: str | None,
               help="Show bounty table (severity → payout)")
 @click.option("--scope", "-s", is_flag=True,
               help="Show in-scope assets")
+@click.option("--guidelines", "-g", is_flag=True,
+              help="Show program policy / guidelines")
 @click.option("--json", "output_json", is_flag=True,
               help="Output as JSON")
-def info(handle: str, bounties: bool, scope: bool, output_json: bool):
+def info(handle: str, bounties: bool, scope: bool, guidelines: bool, output_json: bool):
     """Show detailed info about a program by handle.
+
+    Without flags, shows ALL sections (stats, bounties, scope, guidelines).
+    With flags, only the requested sections are shown.
 
     HANDLE is the program slug (e.g. 'anthropic', 'security', 'vercel').
     """
@@ -262,6 +267,14 @@ def info(handle: str, bounties: bool, scope: bool, output_json: bool):
     if program is None:
         error_console.print(f"[red]Program '{handle}' not found.[/red]")
         sys.exit(1)
+
+    # Determine which sections to show
+    any_section = bounties or scope or guidelines
+    show_all = not any_section
+    show_stats = show_all
+    show_bounties = bounties or show_all
+    show_scope = scope or show_all
+    show_guidelines = guidelines or show_all
 
     if output_json:
         print(json.dumps({
@@ -282,10 +295,11 @@ def info(handle: str, bounties: bool, scope: bool, output_json: bool):
             "industry": program.industry,
             "scopes": program.scopes,
             "bounty_table": program.bounty_table.rows if program.bounty_table else None,
+            "policy": program.stripped_policy or "",
         }, indent=2))
         return
 
-    # ── Header ───────────────────────────────────────────────────────
+    # ── Header (always shown) ─────────────────────────────────────────
     header = Text()
     header.append(f"{program.name}", style="bold cyan")
     header.append(f"\n{program.url}", style="dim link={program.url}")
@@ -293,41 +307,42 @@ def info(handle: str, bounties: bool, scope: bool, output_json: bool):
         header.append(f"\n\n{program.about}", style="italic")
     console.print(Panel(header, title=f"[bold]{program.handle}[/bold]", border_style="cyan"))
 
-    # ── Stats table ──────────────────────────────────────────────────
-    stats = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
-    stats.add_column(style="dim")
-    stats.add_column()
+    # ── Stats (shown when no section flags) ───────────────────────────
+    if show_stats:
+        stats = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
+        stats.add_column(style="dim")
+        stats.add_column()
 
-    state_color = "green" if program.submission_state == "open" else "yellow"
-    stats.add_row("State", f"[{state_color}]{program.submission_state}[/{state_color}]")
-    stats.add_row("Offers Bounties", _fmt_bool(program.offers_bounties))
-    if program.minimum_bounty:
-        stats.add_row("Minimum Bounty", _fmt_money(program.minimum_bounty, program.currency))
-    if program.average_bounty_upper:
-        avg = _fmt_money(program.average_bounty_upper, program.currency)
-        if program.average_bounty_lower:
-            avg = f"{_fmt_money(program.average_bounty_lower, program.currency)} – {_fmt_money(program.average_bounty_upper, program.currency)}"
-        stats.add_row("Average Bounty", avg)
-    if program.top_bounty_upper:
-        top = _fmt_money(program.top_bounty_upper, program.currency)
-        stats.add_row("Top Bounty", f"[yellow]{top}[/yellow]")
-    stats.add_row("Resolved Reports", str(program.resolved_report_count))
-    if program.bounties_total:
-        stats.add_row("Total Paid", f"[green]{program.bounties_total}[/green]")
-    stats.add_row("Triage Active", _fmt_bool(program.triage_active))
-    if program.bounty_time_hours is not None:
-        stats.add_row("Avg Time to Bounty", f"{program.bounty_time_hours:.0f}h")
-    if program.response_efficiency is not None:
-        stats.add_row("Response Efficiency", f"{program.response_efficiency}%")
-    if program.industry:
-        stats.add_row("Industry", program.industry)
-    if program.updated_at:
-        stats.add_row("Updated", _fmt_time_ago(program.updated_at))
+        state_color = "green" if program.submission_state == "open" else "yellow"
+        stats.add_row("State", f"[{state_color}]{program.submission_state}[/{state_color}]")
+        stats.add_row("Offers Bounties", _fmt_bool(program.offers_bounties))
+        if program.minimum_bounty:
+            stats.add_row("Minimum Bounty", _fmt_money(program.minimum_bounty, program.currency))
+        if program.average_bounty_upper:
+            avg = _fmt_money(program.average_bounty_upper, program.currency)
+            if program.average_bounty_lower:
+                avg = f"{_fmt_money(program.average_bounty_lower, program.currency)} – {_fmt_money(program.average_bounty_upper, program.currency)}"
+            stats.add_row("Average Bounty", avg)
+        if program.top_bounty_upper:
+            top = _fmt_money(program.top_bounty_upper, program.currency)
+            stats.add_row("Top Bounty", f"[yellow]{top}[/yellow]")
+        stats.add_row("Resolved Reports", str(program.resolved_report_count))
+        if program.bounties_total:
+            stats.add_row("Total Paid", f"[green]{program.bounties_total}[/green]")
+        stats.add_row("Triage Active", _fmt_bool(program.triage_active))
+        if program.bounty_time_hours is not None:
+            stats.add_row("Avg Time to Bounty", f"{program.bounty_time_hours:.0f}h")
+        if program.response_efficiency is not None:
+            stats.add_row("Response Efficiency", f"{program.response_efficiency}%")
+        if program.industry:
+            stats.add_row("Industry", program.industry)
+        if program.updated_at:
+            stats.add_row("Updated", _fmt_time_ago(program.updated_at))
 
-    console.print(stats)
+        console.print(stats)
 
     # ── Bounty table ─────────────────────────────────────────────────
-    if bounties and program.bounty_table:
+    if show_bounties and program.bounty_table:
         bt = program.bounty_table
         bt_table = Table(
             title="Bounty Table (USD)",
@@ -339,14 +354,12 @@ def info(handle: str, bounties: bool, scope: bool, output_json: bool):
         bt_table.add_column("Max", justify="right")
 
         for row in bt.rows:
-            name = row.get("name", "—")
             severities = {
                 "critical": ("critical_minimum", "critical"),
                 "high": ("high_minimum", "high"),
                 "medium": ("medium_minimum", "medium"),
                 "low": ("low_minimum", "low"),
             }
-            # Check if this row uses severity columns
             has_severities = any(row.get(sev[0]) is not None or row.get(sev[1]) is not None
                                  for sev in severities.values())
             if has_severities:
@@ -360,13 +373,12 @@ def info(handle: str, bounties: bool, scope: bool, output_json: bool):
                             _fmt_money(max_val),
                         )
             else:
-                # Simple row with just a name
-                bt_table.add_row(name, "—", "—")
+                bt_table.add_row(row.get("name", "—"), "—", "—")
 
         console.print(bt_table)
 
     # ── Scope ────────────────────────────────────────────────────────
-    if scope and program.scopes:
+    if show_scope and program.scopes:
         scope_table = Table(
             title="In-Scope Assets",
             box=box.ROUNDED,
@@ -388,6 +400,21 @@ def info(handle: str, bounties: bool, scope: bool, output_json: bool):
         if len(program.scopes) > 50:
             scope_table.caption = f"... and {len(program.scopes) - 50} more assets"
         console.print(scope_table)
+
+    # ── Guidelines / Policy ──────────────────────────────────────────
+    if show_guidelines:
+        if program.stripped_policy:
+            console.print(Panel(
+                program.stripped_policy,
+                title="[bold cyan]Guidelines[/bold cyan]",
+                border_style="cyan",
+                padding=(1, 2),
+            ))
+        else:
+            console.print(
+                f"[yellow]No policy text available for {program.name}.[/yellow]\n"
+                f"[dim]Visit {program.url} to view the policy.[/dim]"
+            )
 
 
 @main.command()
@@ -543,58 +570,6 @@ def hacktivity(program: str | None, limit: int, output_json: bool):
         )
 
     console.print(table)
-
-
-@main.command()
-@click.argument("handle")
-@click.option("--json", "output_json", is_flag=True,
-              help="Output as JSON")
-def policy(handle: str, output_json: bool):
-    """Show a program's security policy / guidelines.
-
-    Displays the full policy text including scope, out-of-scope,
-    rewards, and submission guidelines.
-
-    \b
-    Examples:
-      h1 policy anthropic             Show Anthropic's bug bounty policy
-      h1 policy vercel --json         JSON output
-    """
-    with H1Client() as client:
-        try:
-            program = client.get_program(handle)
-        except Exception as e:
-            error_console.print(f"[red]Error:[/red] {e}")
-            sys.exit(1)
-
-    if program is None:
-        error_console.print(f"[red]Program '{handle}' not found.[/red]")
-        sys.exit(1)
-
-    if output_json:
-        print(json.dumps({
-            "handle": program.handle,
-            "name": program.name,
-            "url": program.url,
-            "policy": program.stripped_policy or "",
-        }, indent=2))
-        return
-
-    if not program.stripped_policy:
-        console.print(
-            f"[yellow]No policy text available for {program.name}.[/yellow]\n"
-            f"[dim]Visit {program.url} to view the policy.[/dim]"
-        )
-        return
-
-    # Display policy
-    console.print(Panel(
-        program.stripped_policy,
-        title=f"[bold cyan]Policy: {program.name}[/bold cyan]",
-        subtitle=f"[dim]{program.url}[/dim]",
-        border_style="cyan",
-        padding=(1, 2),
-    ))
 
 
 if __name__ == "__main__":

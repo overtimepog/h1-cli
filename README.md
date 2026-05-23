@@ -23,10 +23,9 @@ pip install -e ".[test]"
 | Command | Description |
 |---|---|
 | `h1 search [keyword]` | Search programs with powerful filters |
-| `h1 info <handle>` | Detailed program info, bounty table, scope |
+| `h1 info <handle>` | Detailed program info, bounty table, scope, guidelines |
 | `h1 top` | Top programs by reports, bounties, or response time |
 | `h1 hacktivity` | Browse publicly disclosed vulnerability reports |
-| `h1 policy <handle>` | Read a program's security policy and guidelines |
 
 ## Usage
 
@@ -68,16 +67,23 @@ h1 search --fast stripe
 ### Program info
 
 ```bash
-# Basic info
+# Show everything (stats, bounties, scope, guidelines)
 h1 info anthropic
 
-# Show bounty table (severity → payout)
+# Bounty table only
 h1 info anthropic --bounties
 
-# Show in-scope assets
+# Scope only
 h1 info vercel --scope
 
-# JSON output
+# Guidelines / policy only
+h1 info anthropic --guidelines
+h1 info anthropic -g
+
+# Scope + guidelines combined
+h1 info anthropic --scope --guidelines
+
+# JSON output with all data
 h1 info anthropic --json
 ```
 
@@ -113,23 +119,13 @@ h1 hacktivity -n 10
 h1 hacktivity -p vercel --json
 ```
 
-### Policy viewer
-
-```bash
-# Read a program's security policy
-h1 policy anthropic
-
-# JSON output
-h1 policy vercel --json
-```
-
 ## Features
 
 - **No auth needed** — uses HackerOne's public GraphQL and REST APIs
 - **Rich terminal output** — tables, colors, formatting via `rich`
 - **Structured search filters** — filter by asset, paid/VDP, min bounty, min reports
 - **Hacktivity feed** — browse publicly disclosed reports with severity, bounty, reporter info
-- **Policy viewer** — read program guidelines, scope, and out-of-scope rules
+- **Guidelines viewer** — read program policy, scope, and out-of-scope rules via `--guidelines`
 - **Bounty tables** — severity → payout mappings with `--bounties`
 - **Scope listing** — in-scope assets with `--scope`
 - **JSON output** — pipe into `jq` or other tools with `--json` on every command

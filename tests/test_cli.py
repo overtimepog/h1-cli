@@ -64,6 +64,14 @@ def graphql_program_response():
                                 ]
                             }
                         },
+                        "stripped_policy": (
+                            "# Program Policy\n\n"
+                            "Please report security bugs.\n\n"
+                            "## Scope\n\n"
+                            "* *.anthropic.com\n\n"
+                            "## Out of Scope\n\n"
+                            "* Social engineering\n"
+                        ),
                     }
                 }]
             }
@@ -180,7 +188,8 @@ def search_response():
 # ── info command ────────────────────────────────────────────────────────
 
 class TestInfoCommand:
-    def test_info_by_handle(self, runner, httpx_mock: HTTPXMock, graphql_program_response):
+    def test_info_default_shows_all(self, runner, httpx_mock: HTTPXMock, graphql_program_response):
+        """Default: no flags = all sections (stats, bounties, scope, guidelines)."""
         httpx_mock.add_response(
             url="https://hackerone.com/graphql",
             method="POST",
@@ -191,8 +200,14 @@ class TestInfoCommand:
         assert result.exit_code == 0
         assert "Anthropic" in result.output
         assert "AI safety" in result.output
-        assert "289" in result.output  # resolved count
-        assert "$50" in result.output  # min bounty
+        assert "289" in result.output
+        assert "$50" in result.output
+        assert "Bounty Table" in result.output
+        assert "Critical" in result.output
+        assert "In-Scope Assets" in result.output
+        assert "*.anthropic.com" in result.output
+        assert "Guidelines" in result.output
+        assert "Social engineering" in result.output
 
     def test_info_not_found(self, runner, httpx_mock: HTTPXMock):
         httpx_mock.add_response(
@@ -205,7 +220,8 @@ class TestInfoCommand:
         assert result.exit_code == 1
         assert "not found" in result.output.lower()
 
-    def test_info_with_bounties(self, runner, httpx_mock: HTTPXMock, graphql_program_response):
+    def test_info_bounties_only(self, runner, httpx_mock: HTTPXMock, graphql_program_response):
+        """--bounties flag: only bounty section (no stats, scope, guidelines)."""
         httpx_mock.add_response(
             url="https://hackerone.com/graphql",
             method="POST",
@@ -216,8 +232,12 @@ class TestInfoCommand:
         assert result.exit_code == 0
         assert "Bounty Table" in result.output
         assert "Critical" in result.output
+        # Should NOT have stats, scope, or guidelines
+        assert "Resolved Reports" not in result.output
+        assert "In-Scope" not in result.output
 
-    def test_info_with_scope(self, runner, httpx_mock: HTTPXMock, graphql_program_response):
+    def test_info_scope_only(self, runner, httpx_mock: HTTPXMock, graphql_program_response):
+        """--scope flag: only scope section."""
         httpx_mock.add_response(
             url="https://hackerone.com/graphql",
             method="POST",
@@ -226,7 +246,90 @@ class TestInfoCommand:
 
         result = runner.invoke(main, ["info", "anthropic", "--scope"])
         assert result.exit_code == 0
-        assert "anthropic.com" in result.output
+        assert "*.anthropic.com" in result.output
+        assert "In-Scope Assets" in result.output
+        # Should NOT have bounties or guidelines
+        assert "Bounty Table" not in result.output
+        assert "Guidelines" not in result.output
+
+    def test_info_guidelines_only(self, runner, httpx_mock: HTTPXMock, graphql_program_response):
+        """--guidelines flag: only policy/guidelines section."""
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=graphql_program_response,
+        )
+
+        result = runner.invoke(main, ["info", "anthropic", "--guidelines"])
+        assert result.exit_code == 0
+        assert "*.anthropic.com" in result.output
+        assert "Social engineering" in result.output
+        # Should NOT have bounty table
+        assert "Bounty Table" not in result.output
+
+    def test_info_scope_and_guidelines(self, runner, httpx_mock: HTTPXMock, graphql_program_response):
+        """-s -g: scope + guidelines only."""
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=graphql_program_response,
+        )
+
+        result = runner.invoke(main, ["info", "anthropic", "-s", "-g"])
+        assert result.exit_code == 0
+        assert "In-Scope" in result.output
+        assert "Guidelines" in result.output
+        assert "Bounty Table" not in result.output
+
+    def test_info_guidelines_no_policy(self, runner, httpx_mock: HTTPXMock):
+        """Program has no stripped_policy — shows warning."""
+        resp = {
+            "data": {
+                "teams": {
+                    "edges": [{
+                        "node": {
+                            "handle": "testprog", "name": "Test Program",
+                            "url": "https://hackerone.com/testprog",
+                            "offers_bounties": False, "minimum_bounty": None,
+                            "average_bounty_upper_amount": None,
+                            "average_bounty_lower_amount": None,
+                            "currency": "usd", "resolved_report_count": 0,
+                            "submission_state": "open", "triage_active": False,
+                            "about": "", "industry": "",
+                            "stripped_policy": None,
+                            "structured_scopes": {"edges": []},
+                            "bounty_table": None,
+                        }
+                    }]
+                }
+            }
+        }
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=resp,
+        )
+
+        result = runner.invoke(main, ["info", "testprog", "--guidelines"])
+        assert result.exit_code == 0
+        assert "no policy" in result.output.lower() or "No policy" in result.output
+
+    def test_info_json_includes_policy(self, runner, httpx_mock: HTTPXMock, graphql_program_response):
+        """--json always includes all data including policy."""
+        httpx_mock.add_response(
+            url="https://hackerone.com/graphql",
+            method="POST",
+            json=graphql_program_response,
+        )
+
+        result = runner.invoke(main, ["info", "anthropic", "--json"])
+        assert result.exit_code == 0
+        import json
+        data = json.loads(result.output)
+        assert data["handle"] == "anthropic"
+        assert "security bugs" in data["policy"]
+        assert len(data["scopes"]) > 0
+        assert data["bounty_table"] is not None
 
 
 # ── search command ──────────────────────────────────────────────────────
@@ -434,6 +537,7 @@ class TestMainHelp:
         assert "search" in result.output
         assert "info" in result.output
         assert "top" in result.output
+        assert "hacktivity" in result.output
 
 
 # ── hacktivity command ──────────────────────────────────────────────────
@@ -554,130 +658,3 @@ class TestHacktivityCommand:
         data = json.loads(result.output)
         assert len(data) == 2
         assert data[0]["title"] == "SSRF via webhook leads to internal network access"
-
-
-# ── policy command ──────────────────────────────────────────────────────
-
-@pytest.fixture
-def policy_program_response():
-    return {
-        "data": {
-            "teams": {
-                "edges": [{
-                    "node": {
-                        "handle": "anthropic",
-                        "name": "Anthropic",
-                        "url": "https://hackerone.com/anthropic",
-                        "offers_bounties": True,
-                        "minimum_bounty": 50,
-                        "average_bounty_upper_amount": 5000,
-                        "average_bounty_lower_amount": 500,
-                        "currency": "usd",
-                        "resolved_report_count": 289,
-                        "created_at": "2023-01-01T00:00:00Z",
-                        "updated_at": "2024-06-01T00:00:00Z",
-                        "about": "Anthropic is an AI safety company.",
-                        "industry": "Technology",
-                        "submission_state": "open",
-                        "triage_active": True,
-                        "bounty_time": 12.0,
-                        "response_efficiency_percentage": 98,
-                        "bounties_total": "2M+",
-                        "stripped_policy": (
-                            "# Program Policy\n\n"
-                            "Please report security bugs to our program.\n\n"
-                            "## Scope\n\n"
-                            "* *.anthropic.com\n"
-                            "* claude.ai\n\n"
-                            "## Out of Scope\n\n"
-                            "* Social engineering\n"
-                            "* Denial of service attacks\n\n"
-                            "## Rewards\n\n"
-                            "Bounties range from $500 to $15,000."
-                        ),
-                        "structured_scopes": {"edges": []},
-                        "bounty_table": None,
-                    }
-                }]
-            }
-        }
-    }
-
-
-class TestPolicyCommand:
-    def test_policy_by_handle(self, runner, httpx_mock: HTTPXMock, policy_program_response):
-        httpx_mock.add_response(
-            url="https://hackerone.com/graphql",
-            method="POST",
-            json=policy_program_response,
-        )
-
-        result = runner.invoke(main, ["policy", "anthropic"])
-        assert result.exit_code == 0
-        assert "*.anthropic.com" in result.output
-        assert "claude.ai" in result.output
-        assert "Social engineering" in result.output
-        assert "Anthropic" in result.output
-
-    def test_policy_not_found(self, runner, httpx_mock: HTTPXMock):
-        httpx_mock.add_response(
-            url="https://hackerone.com/graphql",
-            method="POST",
-            json={"data": {"teams": {"edges": []}}},
-        )
-
-        result = runner.invoke(main, ["policy", "nonexistent999"])
-        assert result.exit_code == 1
-        assert "not found" in result.output.lower()
-
-    def test_policy_no_policy_text(self, runner, httpx_mock: HTTPXMock):
-        """Program exists but has no stripped_policy text."""
-        resp = {
-            "data": {
-                "teams": {
-                    "edges": [{
-                        "node": {
-                            "handle": "testprog",
-                            "name": "Test Program",
-                            "url": "https://hackerone.com/testprog",
-                            "offers_bounties": False,
-                            "minimum_bounty": None,
-                            "average_bounty_upper_amount": None,
-                            "average_bounty_lower_amount": None,
-                            "currency": "usd",
-                            "resolved_report_count": 0,
-                            "submission_state": "open",
-                            "triage_active": False,
-                            "about": "",
-                            "industry": "",
-                            "stripped_policy": None,
-                            "structured_scopes": {"edges": []},
-                            "bounty_table": None,
-                        }
-                    }]
-                }
-            }
-        }
-        httpx_mock.add_response(
-            url="https://hackerone.com/graphql",
-            method="POST",
-            json=resp,
-        )
-
-        result = runner.invoke(main, ["policy", "testprog"])
-        assert result.exit_code == 0
-        assert "No policy" in result.output or "no policy" in result.output.lower()
-
-    def test_policy_json_output(self, runner, httpx_mock: HTTPXMock, policy_program_response):
-        httpx_mock.add_response(
-            url="https://hackerone.com/graphql",
-            method="POST",
-            json=policy_program_response,
-        )
-
-        result = runner.invoke(main, ["policy", "anthropic", "--json"])
-        assert result.exit_code == 0
-        import json
-        data = json.loads(result.output)
-        assert data["handle"] == "anthropic"
-        assert "security bugs" in data["policy"]

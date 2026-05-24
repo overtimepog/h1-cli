@@ -42,8 +42,8 @@ query($handle: String!) {
         top_bounty_lower_amount
         profile_picture(size: medium)
         internet_bug_bounty
-        stripped_policy
-        structured_scopes(first: 200) {
+        policy
+        structured_scopes(first: 50) {
           edges {
             node {
               asset_identifier
@@ -246,7 +246,7 @@ class Program:
     internet_bug_bounty: bool = False
     scopes: list[dict[str, Any]] = field(default_factory=list)
     bounty_table: BountyTable | None = None
-    stripped_policy: str = ""
+    policy: str = ""
 
     @classmethod
     def from_graphql(cls, node: dict) -> Program:
@@ -279,7 +279,7 @@ class Program:
             internet_bug_bounty=node.get("internet_bug_bounty", False),
             scopes=scopes,
             bounty_table=BountyTable.from_graphql(node.get("bounty_table")),
-            stripped_policy=node.get("stripped_policy", ""),
+            policy=node.get("policy", ""),
         )
 
     @classmethod

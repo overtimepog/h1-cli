@@ -101,7 +101,7 @@ def sample_search_response():
                     "triage_active": True,
                 },
                 "about": "Anthropic is an AI safety company.",
-                "stripped_policy": "Policy text...",
+                "policy": "Policy text...",
                 "profile_picture": "https://example.com/pic.jpg",
                 "internet_bug_bounty": False,
                 "team_type": "team",
@@ -785,12 +785,12 @@ class TestH1ClientHacktivity:
             client.get_hacktivity()
 
 
-# ── Program policy (stripped_policy) ────────────────────────────────────
+# ── Program policy ────────────────────────────────────────────────────
 
 class TestProgramPolicy:
-    def test_stripped_policy_parsed(self, sample_graphql_response):
-        """Verify stripped_policy is parsed from GraphQL response."""
-        sample_graphql_response["data"]["teams"]["edges"][0]["node"]["stripped_policy"] = (
+    def test_policy_parsed(self, sample_graphql_response):
+        """Verify policy field is parsed from GraphQL response."""
+        sample_graphql_response["data"]["teams"]["edges"][0]["node"]["policy"] = (
             "# Program Policy\n\nPlease report security bugs.\n\n## Scope\n\n"
             "* hackerone.com\n* api.hackerone.com\n\n## Out of Scope\n\n"
             "* social engineering\n* denial of service"
@@ -798,13 +798,28 @@ class TestProgramPolicy:
         node = sample_graphql_response["data"]["teams"]["edges"][0]["node"]
         program = Program.from_graphql(node)
 
-        assert program.stripped_policy != ""
-        assert "security bugs" in program.stripped_policy
-        assert "hackerone.com" in program.stripped_policy
+        assert program.policy != ""
+        assert "security bugs" in program.policy
+        assert "hackerone.com" in program.policy
 
-    def test_stripped_policy_missing(self, sample_graphql_response):
-        """Program with no stripped_policy field defaults to empty string."""
+    def test_policy_missing(self, sample_graphql_response):
+        """Program with no policy field defaults to empty string."""
         node = sample_graphql_response["data"]["teams"]["edges"][0]["node"]
         program = Program.from_graphql(node)
 
-        assert program.stripped_policy == ""
+        assert program.policy == ""
+
+    def test_policy_field_exists_in_schema(self):
+        """Regression: 'policy' exists on Team type, not 'stripped_policy'.
+        
+        HackerOne removed stripped_policy from the GraphQL schema.
+        We must query 'policy' (String) instead.
+        """
+        from h1cli.client import PROGRAM_QUERY, SEARCH_GQL_QUERY
+        
+        assert "stripped_policy" not in PROGRAM_QUERY, (
+            "PROGRAM_QUERY uses 'stripped_policy' which no longer exists on Team type"
+        )
+        assert "stripped_policy" not in SEARCH_GQL_QUERY, (
+            "SEARCH_GQL_QUERY uses 'stripped_policy' which no longer exists on Team type"
+        )

@@ -295,7 +295,7 @@ def info(handle: str, bounties: bool, scope: bool, guidelines: bool, output_json
             "industry": program.industry,
             "scopes": program.scopes,
             "bounty_table": program.bounty_table.rows if program.bounty_table else None,
-            "policy": program.stripped_policy or "",
+            "policy": program.policy or "",
         }, indent=2))
         return
 
@@ -403,9 +403,9 @@ def info(handle: str, bounties: bool, scope: bool, guidelines: bool, output_json
 
     # ── Guidelines / Policy ──────────────────────────────────────────
     if show_guidelines:
-        if program.stripped_policy:
+        if program.policy:
             console.print(Panel(
-                program.stripped_policy,
+                program.policy,
                 title="[bold cyan]Guidelines[/bold cyan]",
                 border_style="cyan",
                 padding=(1, 2),

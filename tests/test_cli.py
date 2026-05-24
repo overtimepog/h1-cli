@@ -64,7 +64,7 @@ def graphql_program_response():
                                 ]
                             }
                         },
-                        "stripped_policy": (
+                        "policy": (
                             "# Program Policy\n\n"
                             "Please report security bugs.\n\n"
                             "## Scope\n\n"
@@ -156,7 +156,7 @@ def search_response():
                     "triage_active": True,
                 },
                 "about": "AI safety company.",
-                "stripped_policy": "...",
+                "policy": "...",
                 "profile_picture": "",
                 "internet_bug_bounty": False,
                 "team_type": "team",
@@ -176,7 +176,7 @@ def search_response():
                     "quick_to_first_response": True,
                 },
                 "about": "Crypto trading platform.",
-                "stripped_policy": "...",
+                "policy": "...",
                 "profile_picture": "",
                 "internet_bug_bounty": False,
                 "team_type": "team",
@@ -282,7 +282,7 @@ class TestInfoCommand:
         assert "Bounty Table" not in result.output
 
     def test_info_guidelines_no_policy(self, runner, httpx_mock: HTTPXMock):
-        """Program has no stripped_policy — shows warning."""
+        """Program has no policy — shows warning."""
         resp = {
             "data": {
                 "teams": {
@@ -296,7 +296,7 @@ class TestInfoCommand:
                             "currency": "usd", "resolved_report_count": 0,
                             "submission_state": "open", "triage_active": False,
                             "about": "", "industry": "",
-                            "stripped_policy": None,
+                            "policy": None,
                             "structured_scopes": {"edges": []},
                             "bounty_table": None,
                         }
